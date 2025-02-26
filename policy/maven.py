@@ -85,12 +85,11 @@ class MAVEN:
                 batch[key] = torch.tensor(batch[key], dtype=torch.long)
             else:
                 batch[key] = torch.tensor(batch[key], dtype=torch.float32)
-        s, s_next, u, r, avail_u, avail_u_next, terminated, z = batch['s'], batch['s_next'], batch['u'], batch['r'],  \
-                                                                batch['avail_u'], batch['avail_u_next'],\
-                                                                batch['terminated'],   batch['z']
+        s, s_next, u, r, avail_u, avail_u_next, terminated, z = \
+            batch['s'], batch['s_next'], batch['u'], batch['r'], batch['avail_u'], batch['avail_u_next'], batch['terminated'], batch['z']
         mask = 1 - batch["padded"].float()  # 用来把那些填充的经验的TD-error置0，从而不让它们影响到学习
 
-        # 得到每个agent对应的Q值，维度为(episode个数, max_episode_len， n_agents， n_actions)
+        # 得到每个agent对应的Q值，维度为(episode个数, max_episode_len, n_agents, n_actions)
         q_evals, q_targets = self.get_q_values(batch, max_episode_len)
 
         if self.args.cuda:
@@ -102,6 +101,7 @@ class MAVEN:
             terminated = terminated.cuda()
             mask = mask.cuda()
             z = z.cuda()
+
         # -------------------------------------------------RL Loss------------------------------------------------------
         z_prob = self.z_policy(s[:, 0, :])
         log_z_prob = torch.log(z_prob)
@@ -110,8 +110,6 @@ class MAVEN:
         z_prob_taken = torch.gather(z_prob, index=class_z, dim=-1).squeeze(-1)
         z_returns = r.sum(dim=1)
         rl_loss = - (z_prob_taken * (z_returns + self.args.entropy_coefficient * entropy)).mean()
-
-        # -------------------------------------------------RL Loss------------------------------------------------------
 
         # -------------------------------------------------MI Loss------------------------------------------------------
         inputs = []
@@ -136,11 +134,11 @@ class MAVEN:
         # -------------------------------------------------MI Loss------------------------------------------------------
 
         # -------------------------------------------------QL Loss------------------------------------------------------
-        # 取每个agent动作对应的Q值，并且把最后不需要的一维去掉，因为最后一维只有一个值了
+        # 取每个agent动作对应的Q值，并且把最后不需要的一维去掉
         q_evals = torch.gather(q_evals, dim=3, index=u).squeeze(3)
 
         # 得到target_q
-        q_targets[avail_u_next == 0.0] = - 9999999
+        q_targets[avail_u_next == 0.0] = -9999999
         q_targets = q_targets.max(dim=3)[0]
 
         q_total_eval = self.eval_qmix_net(q_evals, s)
@@ -160,14 +158,14 @@ class MAVEN:
         loss.backward()
         torch.nn.utils.clip_grad_norm_(self.eval_parameters, self.args.grad_norm_clip)
         self.optimizer.step()
-        # print('mi_loss is {}, ql_loss is {}'.format(mi_loss, ql_loss))
-        # print('Training params:')
-        # for params in self.eval_rnn.named_parameters():
-        #     print(params)
 
         if train_step > 0 and train_step % self.args.target_update_cycle == 0:
             self.target_rnn.load_state_dict(self.eval_rnn.state_dict())
             self.target_qmix_net.load_state_dict(self.eval_qmix_net.state_dict())
+
+        print("Training Step {}: Loss = {:.6f}".format(train_step, loss))
+        return loss
+
 
     def _get_inputs(self, batch, transition_idx):
         # 取出所有episode上该transition_idx的经验，u_onehot要取出所有，因为要用到上一条

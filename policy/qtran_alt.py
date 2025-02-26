@@ -67,10 +67,14 @@ class QtranAlt:
 
     def learn(self, batch, max_episode_len, train_step, epsilon=None):  # train_step表示是第几次学习，用来控制更新target_net网络的参数
         '''
-        在learn的时候，抽取到的数据是四维的，四个维度分别为 1——第几个episode 2——episode中第几个transition
-        3——第几个agent的数据 4——具体obs维度。因为在选动作时不仅需要输入当前的inputs，还要给神经网络输入hidden_state，
-        hidden_state和之前的经验相关，因此就不能随机抽取经验进行学习。所以这里一次抽取多个episode，然后一次给神经网络
-        传入每个episode的同一个位置的transition
+        在learn的时候，抽取到的数据是四维的，四个维度分别为
+        1——第几个episode
+        2——episode中第几个transition
+        3——第几个agent的数据
+        4——具体obs维度。
+        因为在选动作时不仅需要输入当前的inputs，还要给神经网络输入hidden_state，
+        hidden_state和之前的经验相关，因此就不能随机抽取经验进行学习。
+        所以这里一次抽取多个episode，然后一次给神经网络传入每个episode的同一个位置的transition
         '''
         episode_num = batch['o'].shape[0]
         self.init_hidden(episode_num)
@@ -80,8 +84,8 @@ class QtranAlt:
             else:
                 batch[key] = torch.tensor(batch[key], dtype=torch.float32)
         s, s_next, u, r, avail_u, avail_u_next, terminated = batch['s'], batch['s_next'], batch['u'], \
-                                                             batch['r'],  batch['avail_u'], batch['avail_u_next'],\
-                                                             batch['terminated']
+                                                              batch['r'], batch['avail_u'], batch['avail_u_next'], \
+                                                              batch['terminated']
         mask = 1 - batch["padded"].float().repeat(1, 1, self.n_agents)  # 用来把那些填充的经验的TD-error置0，从而不让它们影响到学习
         if self.args.cuda:
             u = u.cuda()
@@ -90,13 +94,13 @@ class QtranAlt:
             avail_u_next = avail_u_next.cuda()
             terminated = terminated.cuda()
             mask = mask.cuda()
-        # 得到每个agent对应的Q和hidden_states，维度为(episode个数, max_episode_len， n_agents， n_actions/hidden_dim)
+        # 得到每个agent对应的Q和hidden_states，维度为(episode个数, max_episode_len, n_agents, n_actions/hidden_dim)
         individual_q_evals, individual_q_targets, hidden_evals, hidden_targets = self._get_individual_q(batch, max_episode_len)
 
         # 得到当前时刻和下一时刻每个agent的局部最优动作及其one_hot表示
         individual_q_clone = individual_q_evals.clone()
-        individual_q_clone[avail_u == 0.0] = - 999999
-        individual_q_targets[avail_u_next == 0.0] = - 999999
+        individual_q_clone[avail_u == 0.0] = -999999
+        individual_q_targets[avail_u_next == 0.0] = -999999
 
         opt_onehot_eval = torch.zeros(*individual_q_clone.shape)
         opt_action_eval = individual_q_clone.argmax(dim=3, keepdim=True)
@@ -107,69 +111,50 @@ class QtranAlt:
         opt_onehot_target = opt_onehot_target.scatter(-1, opt_action_target[:, :].cpu(), 1)
 
         # ---------------------------------------------L_td-------------------------------------------------------------
-
-        # 计算joint_q和v，要注意joint_q是每个agent都有，v只有一个
-        # joint_q的维度为(episode个数, max_episode_len， n_agents， n_actions), 而且joint_q在后面的l_nopt还要用到
-        # v的维度为(episode个数, max_episode_len)
+        # 计算joint_q和v
         joint_q_evals, joint_q_targets, v = self.get_qtran(batch, opt_onehot_target, hidden_evals, hidden_targets)
-
-        # 取出当前agent动作对应的joint_q_chosen以及它的局部最优动作对应的joint_q
-        joint_q_chosen = torch.gather(joint_q_evals, dim=-1, index=u).squeeze(-1)  # (episode个数, max_episode_len, n_agents)
+        # 取出当前agent动作对应的joint_q_chosen以及局部最优动作对应的joint_q
+        joint_q_chosen = torch.gather(joint_q_evals, dim=-1, index=u).squeeze(-1)
         joint_q_opt = torch.gather(joint_q_targets, dim=-1, index=opt_action_target).squeeze(-1)
-
-        # loss
         y_dqn = r.repeat(1, 1, self.n_agents) + self.args.gamma * joint_q_opt * (1 - terminated.repeat(1, 1, self.n_agents))
         td_error = joint_q_chosen - y_dqn.detach()
         l_td = ((td_error * mask) ** 2).sum() / mask.sum()
         # ---------------------------------------------L_td-------------------------------------------------------------
 
         # ---------------------------------------------L_opt------------------------------------------------------------
-
-        # 将局部最优动作的Q值相加  (episode个数,max_episode_len)
-        # 这里要使用individual_q_clone，它把不能执行的动作Q值改变了，使用individual_q_evals可能会使用不能执行的动作的Q值
+        # 将局部最优动作的Q值相加
         q_sum_opt = individual_q_clone.max(dim=-1)[0].sum(dim=-1)
-
-        # 重新得到joint_q_opt_eval，它和joint_q_evals的区别是前者输入的动作是当前局部最优动作，后者输入的动作是当前执行的动作
+        # 重新得到joint_q_opt_eval：用当前局部最优动作计算joint_q
         joint_q_opt_evals, _, _ = self.get_qtran(batch, opt_onehot_eval, hidden_evals, hidden_targets, hat=True)
-        joint_q_opt_evals = torch.gather(joint_q_opt_evals, dim=-1, index=opt_action_eval).squeeze(-1)  # (episode个数, max_episode_len， n_agents)
-
-        # 因为QTRAN-alt要对每个agent都计算l_opt，所以要把q_sum_opt和v再增加一个agent维
+        joint_q_opt_evals = torch.gather(joint_q_opt_evals, dim=-1, index=opt_action_eval).squeeze(-1)
+        # 扩展维度以便计算l_opt
         q_sum_opt = q_sum_opt.unsqueeze(-1).expand(-1, -1, self.n_agents)
         v = v.unsqueeze(-1).expand(-1, -1, self.n_agents)
-        opt_error = q_sum_opt - joint_q_opt_evals.detach() + v  # 计算l_opt时需要将joint_q_opt_evals固定
+        opt_error = q_sum_opt - joint_q_opt_evals.detach() + v  # 计算l_opt时将joint_q_opt_evals固定
         l_opt = ((opt_error * mask) ** 2).sum() / mask.sum()
-
         # ---------------------------------------------L_opt------------------------------------------------------------
 
         # ---------------------------------------------L_nopt-----------------------------------------------------------
-        # 因为L_nopt约束的是当前agent所有可执行的动作中，对应的最小的d，为了让不能执行的动作不影响d的计算，将不能执行的动作对应的q变大
+        # 对于不可执行的动作，将对应的Q值置大
         individual_q_evals[avail_u == 0.0] = 999999
-
-        # 得到agent_i之外的其他agent的执行动作的Q值之和q_other_sum
-        #   1. 先得到每个agent的执行动作的Q值q_all,(episode个数, max_episode_len, n_agents， 1)
+        # 得到每个agent的执行动作Q值，调整维度后求和得到其他agent的Q值之和
         q_all_chosen = torch.gather(individual_q_evals, dim=-1, index=u)
-        #   2. 把q_all最后一个维度上当前agent的Q值变成所有agent的Q值，(episode个数, max_episode_len, n_agents, n_agents)
         q_all_chosen = q_all_chosen.view((episode_num, max_episode_len, 1, -1)).repeat(1, 1, self.n_agents, 1)
         q_mask = (1 - torch.eye(self.n_agents)).unsqueeze(0).unsqueeze(0)
         if self.args.cuda:
             q_mask = q_mask.cuda()
-        q_other_chosen = q_all_chosen * q_mask  # 把每个agent自己的Q值置为0，从而才能相加得到其他agent的Q值之和
-        #   3. 求和，同时由于对于当前agent的每个动作，都要和q_other_sum相加，所以把q_other_sum扩展出n_actions维度
+        q_other_chosen = q_all_chosen * q_mask
         q_other_sum = q_other_chosen.sum(dim=-1, keepdim=True).repeat(1, 1, 1, self.n_actions)
-
-        # 当前agent的每个动作的Q和其他agent执行动作的Q相加，得到D中的第一项
+        # 当前agent的每个动作的Q和其他agent执行动作的Q相加
         q_sum_nopt = individual_q_evals + q_other_sum
-
-        # 因为joint_q_evals的维度是(episode个数,max_episode_len,n_agents,n_actions)，所以要对v扩展出一个n_actions维度
+        # 将v扩展至与joint_q_evals相同的维度
         v = v.unsqueeze(-1).expand(-1, -1, -1, self.n_actions)
-        d = q_sum_nopt - joint_q_evals.detach() + v  # 计算l_nopt时需要将qtran_q_evals固定
+        d = q_sum_nopt - joint_q_evals.detach() + v  # 计算l_nopt时将joint_q_evals固定
         d = d.min(dim=-1)[0]
         l_nopt = ((d * mask) ** 2).sum() / mask.sum()
         # ---------------------------------------------L_nopt-----------------------------------------------------------
 
-        # print('l_td is {}, l_opt is {}, l_nopt is {}'.format(l_td, l_opt, l_nopt))
         loss = l_td + self.args.lambda_opt * l_opt + self.args.lambda_nopt * l_nopt
-        # loss = l_td + self.args.lambda_opt * l_opt
         self.optimizer.zero_grad()
         loss.backward()
         torch.nn.utils.clip_grad_norm_(self.eval_parameters, self.args.grad_norm_clip)
@@ -178,6 +163,10 @@ class QtranAlt:
         if train_step > 0 and train_step % self.args.target_update_cycle == 0:
             self.target_rnn.load_state_dict(self.eval_rnn.state_dict())
             self.target_joint_q.load_state_dict(self.eval_joint_q.state_dict())
+
+        print("Training Step {}: Loss = {:.6f}".format(train_step, loss))
+        return loss
+
 
     def _get_individual_q(self, batch, max_episode_len):
         episode_num = batch['o'].shape[0]

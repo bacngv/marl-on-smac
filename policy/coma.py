@@ -84,7 +84,6 @@ class COMA:
         input_shape += self.n_actions * self.n_agents * 2  # 54
 
         return input_shape
-
     def learn(self, batch, max_episode_len, train_step, epsilon):  # train_step表示是第几次学习，用来控制更新target_net网络的参数
         episode_num = batch['o'].shape[0]
         self.init_hidden(episode_num)
@@ -93,36 +92,33 @@ class COMA:
                 batch[key] = torch.tensor(batch[key], dtype=torch.long)
             else:
                 batch[key] = torch.tensor(batch[key], dtype=torch.float32)
-        u, r, avail_u, terminated = batch['u'], batch['r'],  batch['avail_u'], batch['terminated']
+        u, r, avail_u, terminated = batch['u'], batch['r'], batch['avail_u'], batch['terminated']
         mask = (1 - batch["padded"].float()).repeat(1, 1, self.n_agents)  # 用来把那些填充的经验的TD-error置0，从而不让它们影响到学习
         if self.args.cuda:
             u = u.cuda()
             mask = mask.cuda()
-        # 根据经验计算每个agent的Ｑ值,从而跟新Critic网络。然后计算各个动作执行的概率，从而计算advantage去更新Actor。
-        q_values = self._train_critic(batch, max_episode_len, train_step)  # 训练critic网络，并且得到每个agent的所有动作的Ｑ值
+
+        # 根据经验计算每个agent的Q值, 从而更新Critic网络。然后计算各个动作执行的概率，从而计算advantage去更新Actor。
+        q_values = self._train_critic(batch, max_episode_len, train_step)  # 训练critic网络，并且得到每个agent的所有动作的Q值
         action_prob = self._get_action_prob(batch, max_episode_len, epsilon)  # 每个agent的所有动作的概率
 
-        q_taken = torch.gather(q_values, dim=3, index=u).squeeze(3)  # 每个agent的选择的动作对应的Ｑ值
-        pi_taken = torch.gather(action_prob, dim=3, index=u).squeeze(3)  # 每个agent的选择的动作对应的概率
-        pi_taken[mask == 0] = 1.0  # 因为要取对数，对于那些填充的经验，所有概率都为0，取了log就是负无穷了，所以让它们变成1
+        q_taken = torch.gather(q_values, dim=3, index=u).squeeze(3)  # 每个agent选择的动作对应的Q值
+        pi_taken = torch.gather(action_prob, dim=3, index=u).squeeze(3)  # 每个agent选择的动作对应的概率
+        pi_taken[mask == 0] = 1.0  # 对于填充的经验，置为1避免log(0)
         log_pi_taken = torch.log(pi_taken)
-
 
         # 计算advantage
         baseline = (q_values * action_prob).sum(dim=3, keepdim=True).squeeze(3).detach()
         advantage = (q_taken - baseline).detach()
         loss = - ((advantage * log_pi_taken) * mask).sum() / mask.sum()
+
         self.rnn_optimizer.zero_grad()
         loss.backward()
         torch.nn.utils.clip_grad_norm_(self.rnn_parameters, self.args.grad_norm_clip)
         self.rnn_optimizer.step()
-        # print('Training: loss is', loss.item())
-        # print('Training: critic params')
-        # for params in self.eval_critic.named_parameters():
-        #     print(params)
-        # print('Training: actor params')
-        # for params in self.eval_rnn.named_parameters():
-        #     print(params)
+
+        print("Training Step {}: Loss = {:.6f}".format(train_step, loss))
+        return loss
 
     def _get_critic_inputs(self, batch, transition_idx, max_episode_len):
         # 取出所有episode上该transition_idx的经验

@@ -11,15 +11,15 @@ def get_common_args():
     # the environment setting
     parser.add_argument('--difficulty', type=str, default='7', help='the difficulty of the game')
     parser.add_argument('--game_version', type=str, default='latest', help='the version of the game')
-    parser.add_argument('--map', type=str, default='5m_vs_6m', help='the map of the game')
+    parser.add_argument('--map', type=str, default='3m', help='the map of the game')
     parser.add_argument('--seed', type=int, default=123, help='random seed')
     parser.add_argument('--step_mul', type=int, default=8, help='how many steps to make an action')
-    parser.add_argument('--replay_dir', type=str, default='', help='absolute path to save the replay')
+    parser.add_argument('--replay_dir', type=str, default='./replay', help='absolute path to save the replay')
     # The alternative algorithms are vdn, coma, central_v, qmix, qtran_base,
     # qtran_alt, reinforce, coma+commnet, central_v+commnet, reinforce+commnet，
     # coma+g2anet, central_v+g2anet, reinforce+g2anet, maven
     parser.add_argument('--alg', type=str, default='reinforce+g2anet', help='the algorithm to train the agent')
-    parser.add_argument('--n_steps', type=int, default=2000000, help='total time steps')
+    parser.add_argument('--n_steps', type=int, default=200000, help='total time steps')
     parser.add_argument('--n_episodes', type=int, default=1, help='the number of episodes before once training')
     parser.add_argument('--last_action', type=bool, default=True, help='whether to use the last action to choose action')
     parser.add_argument('--reuse_network', type=bool, default=True, help='whether to use one network for all agents')
@@ -28,7 +28,7 @@ def get_common_args():
     parser.add_argument('--evaluate_cycle', type=int, default=5000, help='how often to evaluate the model')
     parser.add_argument('--evaluate_epoch', type=int, default=32, help='number of the epoch to evaluate the agent')
     parser.add_argument('--model_dir', type=str, default='./model', help='model directory of the policy')
-    parser.add_argument('--result_dir', type=str, default='./result', help='result directory of the policy')
+    parser.add_argument('--result_dir', type=str, default='./results', help='result directory of the policy')
     parser.add_argument('--load_model', type=bool, default=False, help='whether to load the pretrained model')
     parser.add_argument('--evaluate', type=bool, default=False, help='whether to evaluate the model')
     parser.add_argument('--cuda', type=bool, default=False, help='whether to use the GPU')

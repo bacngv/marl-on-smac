@@ -70,39 +70,37 @@ class CentralV:
         # 学习过程中，要为每个episode的每个agent都维护一个eval_hidden
         self.eval_hidden = None
 
-    def learn(self, batch, max_episode_len, train_step, epsilon):  # train_step表示是第几次学习，用来控制更新target_net网络的参数
+    def learn(self, batch, max_episode_len, train_step, epsilon):
         episode_num = batch['o'].shape[0]
         self.init_hidden(episode_num)
-        for key in batch.keys():  # 把batch里的数据转化成tensor
+        for key in batch.keys():
             if key == 'u':
                 batch[key] = torch.tensor(batch[key], dtype=torch.long)
             else:
                 batch[key] = torch.tensor(batch[key], dtype=torch.float32)
         u, r, avail_u, terminated = batch['u'], batch['r'],  batch['avail_u'], batch['terminated']
-        mask = (1 - batch["padded"].float()).repeat(1, 1, self.n_agents)  # 用来把那些填充的经验的TD-error置0，从而不让它们影响到学习
+        mask = (1 - batch["padded"].float()).repeat(1, 1, self.n_agents)
         if self.args.cuda:
             u = u.cuda()
             mask = mask.cuda()
 
-        # 训练critic网络，并且得到每条经验的td_error, (episode_num, max_episode_len, 1)
         td_error = self._train_critic(batch, max_episode_len, train_step)
         td_error = td_error.repeat(1, 1, self.n_agents)
 
-        # 每个agent的所有动作的概率 (episode_num, max_episode_len， n_agents，n_actions)
         action_prob = self._get_action_prob(batch, max_episode_len, epsilon)
-
-        # 每个agent的选择的动作对应的概率 (episode_num, max_episode_len， n_agents)
         pi_taken = torch.gather(action_prob, dim=3, index=u).squeeze(3)
-        pi_taken[mask == 0] = 1.0  # 因为要取对数，对于那些填充的经验，所有概率都为0，取了log就是负无穷了，所以让它们变成1
+        pi_taken[mask == 0] = 1.0
         log_pi_taken = torch.log(pi_taken)
 
-        # loss函数，(episode_num, max_episode_len, n_agents)
         loss = - ((td_error.detach() * log_pi_taken) * mask).sum() / mask.sum()
         self.rnn_optimizer.zero_grad()
         loss.backward()
         torch.nn.utils.clip_grad_norm_(self.rnn_parameters, self.args.grad_norm_clip)
         self.rnn_optimizer.step()
-        # print('Actor loss is', loss)
+
+        print("Training Step {}: Loss = {:.6f}".format(train_step, loss))
+        return loss
+
 
     def _get_v_values(self, batch, max_episode_len):
         v_evals, v_targets = [], []

@@ -72,7 +72,7 @@ class VDN:
             else:
                 batch[key] = torch.tensor(batch[key], dtype=torch.float32)
         # TODO pymarl中取得经验没有取最后一条，找出原因
-        u, r, avail_u, avail_u_next, terminated = batch['u'], batch['r'],  batch['avail_u'], \
+        u, r, avail_u, avail_u_next, terminated = batch['u'], batch['r'], batch['avail_u'], \
                                                   batch['avail_u_next'], batch['terminated']
         mask = 1 - batch["padded"].float()  # 用来把那些填充的经验的TD-error置0，从而不让它们影响到学习
         if self.args.cuda:
@@ -80,14 +80,14 @@ class VDN:
             r = r.cuda()
             mask = mask.cuda()
             terminated = terminated.cuda()
-        # 得到每个agent对应的Q值，维度为(episode个数, max_episode_len， n_agents，n_actions)
+        # 得到每个agent对应的Q值，维度为(episode个数, max_episode_len, n_agents, n_actions)
         q_evals, q_targets = self.get_q_values(batch, max_episode_len)
 
         # 取每个agent动作对应的Q值，并且把最后不需要的一维去掉，因为最后一维只有一个值了
         q_evals = torch.gather(q_evals, dim=3, index=u).squeeze(3)
 
         # 得到target_q
-        q_targets[avail_u_next == 0.0] = - 9999999
+        q_targets[avail_u_next == 0.0] = -9999999
         q_targets = q_targets.max(dim=3)[0]
 
         q_total_eval = self.eval_vdn_net(q_evals)
@@ -98,7 +98,6 @@ class VDN:
         td_error = targets.detach() - q_total_eval
         masked_td_error = mask * td_error  # 抹掉填充的经验的td_error
 
-        # loss = masked_td_error.pow(2).mean()
         # 不能直接用mean，因为还有许多经验是没用的，所以要求和再比真实的经验数，才是真正的均值
         loss = (masked_td_error ** 2).sum() / mask.sum()
         # print('Loss is ', loss)
@@ -110,6 +109,10 @@ class VDN:
         if train_step > 0 and train_step % self.args.target_update_cycle == 0:
             self.target_rnn.load_state_dict(self.eval_rnn.state_dict())
             self.target_vdn_net.load_state_dict(self.eval_vdn_net.state_dict())
+
+        print("Training Step {}: Loss = {:.6f}".format(train_step, loss))
+        return loss
+
 
     def _get_inputs(self, batch, transition_idx):
         # 取出所有episode上该transition_idx的经验，u_onehot要取出所有，因为要用到上一条

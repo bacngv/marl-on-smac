@@ -70,10 +70,13 @@ class QtranBase:
 
     def learn(self, batch, max_episode_len, train_step, epsilon=None):  # train_step表示是第几次学习，用来控制更新target_net网络的参数
         '''
-        在learn的时候，抽取到的数据是四维的，四个维度分别为 1——第几个episode 2——episode中第几个transition
-        3——第几个agent的数据 4——具体obs维度。因为在选动作时不仅需要输入当前的inputs，还要给神经网络输入hidden_state，
-        hidden_state和之前的经验相关，因此就不能随机抽取经验进行学习。所以这里一次抽取多个episode，然后一次给神经网络
-        传入每个episode的同一个位置的transition
+        在learn的时候，抽取到的数据是四维的，四个维度分别为 
+        1——第几个episode 
+        2——episode中第几个transition
+        3——第几个agent的数据 
+        4——具体obs维度。因为在选动作时不仅需要输入当前的inputs，还要给神经网络输入hidden_state，
+        hidden_state和之前的经验相关，因此就不能随机抽取经验进行学习。所以这里一次抽取多个episode，
+        然后一次给神经网络传入每个episode的同一个位置的transition
         '''
         episode_num = batch['o'].shape[0]
         self.init_hidden(episode_num)
@@ -82,7 +85,7 @@ class QtranBase:
                 batch[key] = torch.tensor(batch[key], dtype=torch.long)
             else:
                 batch[key] = torch.tensor(batch[key], dtype=torch.float32)
-        u, r, avail_u, avail_u_next, terminated = batch['u'], batch['r'],  batch['avail_u'], \
+        u, r, avail_u, avail_u_next, terminated = batch['u'], batch['r'], batch['avail_u'], \
                                                   batch['avail_u_next'], batch['terminated']
         mask = (1 - batch["padded"].float()).squeeze(-1)  # 用来把那些填充的经验的TD-error置0，从而不让它们影响到学习
         if self.args.cuda:
@@ -92,13 +95,13 @@ class QtranBase:
             avail_u_next = avail_u_next.cuda()
             terminated = terminated.cuda()
             mask = mask.cuda()
-        # 得到每个agent对应的Q和hidden_states，维度为(episode个数, max_episode_len， n_agents， n_actions/hidden_dim)
+        # 得到每个agent对应的Q和hidden_states，维度为(episode个数, max_episode_len, n_agents, n_actions/hidden_dim)
         individual_q_evals, individual_q_targets, hidden_evals, hidden_targets = self._get_individual_q(batch, max_episode_len)
 
         # 得到当前时刻和下一时刻每个agent的局部最优动作及其one_hot表示
         individual_q_clone = individual_q_evals.clone()
-        individual_q_clone[avail_u == 0.0] = - 999999
-        individual_q_targets[avail_u_next == 0.0] = - 999999
+        individual_q_clone[avail_u == 0.0] = -999999
+        individual_q_targets[avail_u_next == 0.0] = -999999
 
         opt_onehot_eval = torch.zeros(*individual_q_clone.shape)
         opt_action_eval = individual_q_clone.argmax(dim=3, keepdim=True)
@@ -152,6 +155,9 @@ class QtranBase:
         if train_step > 0 and train_step % self.args.target_update_cycle == 0:
             self.target_rnn.load_state_dict(self.eval_rnn.state_dict())
             self.target_joint_q.load_state_dict(self.eval_joint_q.state_dict())
+
+        print("Training Step {}: Loss = {:.6f}".format(train_step, loss))
+        return loss
 
     def _get_individual_q(self, batch, max_episode_len):
         episode_num = batch['o'].shape[0]

@@ -64,7 +64,7 @@ class Reinforce:
                 batch[key] = torch.tensor(batch[key], dtype=torch.long)
             else:
                 batch[key] = torch.tensor(batch[key], dtype=torch.float32)
-        u, r, avail_u, terminated = batch['u'], batch['r'],  batch['avail_u'], batch['terminated']
+        u, r, avail_u, terminated = batch['u'], batch['r'], batch['avail_u'], batch['terminated']
         mask = (1 - batch["padded"].float())  # 用来把那些填充的经验的TD-error置0，从而不让它们影响到学习
         if self.args.cuda:
             r = r.cuda()
@@ -72,15 +72,15 @@ class Reinforce:
             mask = mask.cuda()
             terminated = terminated.cuda()
 
-        # 得到每条经验的return, (episode_num, max_episode_len， n_agents)
+        # 得到每条经验的return, (episode_num, max_episode_len, n_agents)
         n_return = self._get_returns(r, mask, terminated, max_episode_len)
 
-        # 每个agent的所有动作的概率 (episode_num, max_episode_len， n_agents，n_actions)
+        # 每个agent的所有动作的概率 (episode_num, max_episode_len, n_agents, n_actions)
         action_prob = self._get_action_prob(batch, max_episode_len, epsilon)
 
         # 给mask转换出n_agents维度，用于每个agent的训练
         mask = mask.repeat(1, 1, self.n_agents)
-        # 每个agent的选择的动作对应的概率 (episode_num, max_episode_len， n_agents)
+        # 每个agent的选择的动作对应的概率 (episode_num, max_episode_len, n_agents)
         pi_taken = torch.gather(action_prob, dim=3, index=u).squeeze(3)
         pi_taken[mask == 0] = 1.0  # 因为要取对数，对于那些填充的经验，所有概率都为0，取了log就是负无穷了，所以让它们变成1
         log_pi_taken = torch.log(pi_taken)
@@ -92,7 +92,10 @@ class Reinforce:
         if self.args.alg == 'reinforce+g2anet':
             torch.nn.utils.clip_grad_norm_(self.rnn_parameters, self.args.grad_norm_clip)
         self.rnn_optimizer.step()
-        # print('Actor loss is', loss)
+
+        print("Training Step {}: Loss = {:.6f}".format(train_step, loss))
+        return loss
+
 
     def _get_returns(self, r, mask, terminated, max_episode_len):
         r = r.squeeze(-1)

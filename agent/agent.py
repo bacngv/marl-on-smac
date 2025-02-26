@@ -3,7 +3,7 @@ import torch
 from torch.distributions import Categorical
 
 
-# Agent no communication
+# Agent without communication
 class Agents:
     def __init__(self, args):
         self.n_actions = args.n_actions
@@ -43,11 +43,11 @@ class Agents:
 
     def choose_action(self, obs, last_action, agent_num, avail_actions, epsilon, maven_z=None):
         inputs = obs.copy()
-        avail_actions_ind = np.nonzero(avail_actions)[0]  # index of actions which can be choose
+        avail_actions_ind = np.nonzero(avail_actions)[0]  # indices of actions that can be chosen
 
-        # transform agent_num to onehot vector
+        # Convert agent number to one-hot vector
         agent_id = np.zeros(self.n_agents)
-        agent_id[agent_num] = 1.
+        agent_id[agent_num] = 1.0
 
         if self.args.last_action:
             inputs = np.hstack((inputs, last_action))
@@ -55,14 +55,14 @@ class Agents:
             inputs = np.hstack((inputs, agent_id))
         hidden_state = self.policy.eval_hidden[:, agent_num, :]
 
-        # transform the shape of inputs from (42,) to (1,42)
+        # Reshape inputs from (42,) to (1, 42)
         inputs = torch.tensor(inputs, dtype=torch.float32).unsqueeze(0)
         avail_actions = torch.tensor(avail_actions, dtype=torch.float32).unsqueeze(0)
         if self.args.cuda:
             inputs = inputs.cuda()
             hidden_state = hidden_state.cuda()
 
-        # get q value
+        # Get Q value
         if self.args.alg == 'maven':
             maven_z = torch.tensor(maven_z, dtype=torch.float32).unsqueeze(0)
             if self.args.cuda:
@@ -71,31 +71,33 @@ class Agents:
         else:
             q_value, self.policy.eval_hidden[:, agent_num, :] = self.policy.eval_rnn(inputs, hidden_state)
 
-        # choose action from q value
-        if self.args.alg == 'coma' or self.args.alg == 'central_v' or self.args.alg == 'reinforce':
+        # Choose action based on Q value
+        if self.args.alg in ['coma', 'central_v', 'reinforce']:
             action = self._choose_action_from_softmax(q_value.cpu(), avail_actions, epsilon)
         else:
-            q_value[avail_actions == 0.0] = - float("inf")
+            q_value[avail_actions == 0.0] = -float("inf")
             if np.random.uniform() < epsilon:
-                action = np.random.choice(avail_actions_ind)  # action是一个整数
+                action = np.random.choice(avail_actions_ind)  # action is an integer
             else:
                 action = torch.argmax(q_value)
         return action
 
     def _choose_action_from_softmax(self, inputs, avail_actions, epsilon):
         """
-        :param inputs: # q_value of all actions
+        :param inputs: Q values for all actions
         """
-        action_num = avail_actions.sum(dim=1, keepdim=True).float().repeat(1, avail_actions.shape[-1])  # num of avail_actions
-        # 先将Actor网络的输出通过softmax转换成概率分布
+        action_num = avail_actions.sum(dim=1, keepdim=True).float().repeat(1, avail_actions.shape[-1])  # number of available actions
+        # First, convert the actor network's output into a probability distribution via softmax
         prob = torch.nn.functional.softmax(inputs, dim=-1)
-        # add noise of epsilon
+        # Add epsilon noise to the probability distribution
         prob = ((1 - epsilon) * prob + torch.ones_like(prob) * epsilon / action_num)
-        prob[avail_actions == 0] = 0.0  # 不能执行的动作概率为0
+        prob[avail_actions == 0] = 0.0  # Set probability of unavailable actions to 0
 
         """
-        不能执行的动作概率为0之后，prob中的概率和不为1，这里不需要进行正则化，因为torch.distributions.Categorical
-        会将其进行正则化。要注意在训练的过程中没有用到Categorical，所以训练时取执行的动作对应的概率需要再正则化。
+        After setting the probability of unavailable actions to 0, the sum of probabilities in 'prob'
+        is not equal to 1. This is acceptable because torch.distributions.Categorical will normalize it.
+        Note that during training, Categorical is not used, so the probability corresponding to the executed action
+        needs to be renormalized.
         """
         
         action = Categorical(prob).sample().long()
@@ -111,23 +113,23 @@ class Agents:
                     if transition_idx + 1 >= max_episode_len:
                         max_episode_len = transition_idx + 1
                     break
-        if max_episode_len == 0:  # 防止所有的episode都没有结束，导致terminated中没有1
+        if max_episode_len == 0:  # In case none of the episodes have ended, so no 1 exists in 'terminated'
             max_episode_len = self.args.episode_limit
         return max_episode_len
 
-    def train(self, batch, train_step, epsilon=None):  # coma needs epsilon for training
-
-        # different episode has different length, so we need to get max length of the batch
+    def train(self, batch, train_step, epsilon=None):  # COMA requires epsilon during training
+        # Since episodes have different lengths, determine the maximum episode length in the batch
         max_episode_len = self._get_max_episode_len(batch)
         for key in batch.keys():
             if key != 'z':
                 batch[key] = batch[key][:, :max_episode_len]
-        self.policy.learn(batch, max_episode_len, train_step, epsilon)
+        loss = self.policy.learn(batch, max_episode_len, train_step, epsilon)
         if train_step > 0 and train_step % self.args.save_cycle == 0:
             self.policy.save_model(train_step)
+        return loss
 
 
-# Agent for communication
+# Agent with communication
 class CommAgents:
     def __init__(self, args):
         self.n_actions = args.n_actions
@@ -149,20 +151,22 @@ class CommAgents:
         self.args = args
         print('Init CommAgents')
 
-    # 根据weights得到概率，然后再根据epsilon选动作
+    # Determine probabilities from weights and select an action based on epsilon
     def choose_action(self, weights, avail_actions, epsilon):
         weights = weights.unsqueeze(0)
         avail_actions = torch.tensor(avail_actions, dtype=torch.float32).unsqueeze(0)
-        action_num = avail_actions.sum(dim=1, keepdim=True).float().repeat(1, avail_actions.shape[-1])  # 可以选择的动作的个数
-        # 先将Actor网络的输出通过softmax转换成概率分布
+        action_num = avail_actions.sum(dim=1, keepdim=True).float().repeat(1, avail_actions.shape[-1])  # number of available actions
+        # Convert the actor network's output into a probability distribution via softmax
         prob = torch.nn.functional.softmax(weights, dim=-1)
-        # 在训练的时候给概率分布添加噪音
+        # Add noise to the probability distribution during training
         prob = ((1 - epsilon) * prob + torch.ones_like(prob) * epsilon / action_num)
-        prob[avail_actions == 0] = 0.0  # 不能执行的动作概率为0
+        prob[avail_actions == 0] = 0.0  # Set probability of unavailable actions to 0
 
         """
-        不能执行的动作概率为0之后，prob中的概率和不为1，这里不需要进行正则化，因为torch.distributions.Categorical
-        会将其进行正则化。要注意在训练的过程中没有用到Categorical，所以训练时取执行的动作对应的概率需要再正则化。
+        After setting the probability of unavailable actions to 0, the sum of probabilities in 'prob'
+        is not equal to 1. This is acceptable because torch.distributions.Categorical will normalize it.
+        Note that during training, Categorical is not used, so the probability corresponding to the executed action
+        needs to be renormalized.
         """
 
         action = Categorical(prob).sample().long()
@@ -173,12 +177,12 @@ class CommAgents:
         last_action = torch.tensor(last_action, dtype=torch.float32)
         inputs = list()
         inputs.append(obs)
-        # 给obs添加上一个动作、agent编号
+        # Append the last action and agent identity to the observation
         if self.args.last_action:
             inputs.append(last_action)
         if self.args.reuse_network:
             inputs.append(torch.eye(self.args.n_agents))
-        inputs = torch.cat([x for x in inputs], dim=1)
+        inputs = torch.cat(inputs, dim=1)
         if self.args.cuda:
             inputs = inputs.cuda()
             self.policy.eval_hidden = self.policy.eval_hidden.cuda()
@@ -196,25 +200,16 @@ class CommAgents:
                     if transition_idx + 1 >= max_episode_len:
                         max_episode_len = transition_idx + 1
                     break
-        if max_episode_len == 0:  # 防止所有的episode都没有结束，导致terminated中没有1
+        if max_episode_len == 0:  # In case none of the episodes have ended, so no 1 exists in 'terminated'
             max_episode_len = self.args.episode_limit
         return max_episode_len
 
-    def train(self, batch, train_step, epsilon=None):  # coma在训练时也需要epsilon计算动作的执行概率
-        # 每次学习时，各个episode的长度不一样，因此取其中最长的episode作为所有episode的长度
+    def train(self, batch, train_step, epsilon=None):  # COMA also requires epsilon for computing action probabilities during training
+        # Since each episode can have a different length, use the longest episode in the batch for training
         max_episode_len = self._get_max_episode_len(batch)
         for key in batch.keys():
             batch[key] = batch[key][:, :max_episode_len]
-        self.policy.learn(batch, max_episode_len, train_step, epsilon)
+        loss = self.policy.learn(batch, max_episode_len, train_step, epsilon)
         if train_step > 0 and train_step % self.args.save_cycle == 0:
             self.policy.save_model(train_step)
-
-
-
-
-
-
-
-
-
-
+        return loss
