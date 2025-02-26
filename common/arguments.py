@@ -27,7 +27,7 @@ def get_common_args():
     parser.add_argument('--optimizer', type=str, default="RMS", help='optimizer')
     parser.add_argument('--evaluate_cycle', type=int, default=5000, help='how often to evaluate the model')
     parser.add_argument('--evaluate_epoch', type=int, default=32, help='number of the epoch to evaluate the agent')
-    parser.add_argument('--model_dir', type=str, default='./model', help='model directory of the policy')
+    parser.add_argument('--model_dir', type=str, default='./models', help='model directory of the policy')
     parser.add_argument('--result_dir', type=str, default='./results', help='result directory of the policy')
     parser.add_argument('--load_model', type=bool, default=False, help='whether to load the pretrained model')
     parser.add_argument('--evaluate', type=bool, default=False, help='whether to evaluate the model')
